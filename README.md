@@ -25,18 +25,54 @@ Architecture decisions:
 - [ADR-001: Search Service Architecture](./ADR-001-search-service-architecture.md)
 - [ADR-002: Use PostgreSQL for Search](./ADR-002-use-postgresql-for-search.md)
 - [ADR-003: Design for AWS Deployment](./ADR-003-design-for-aws-deployment.md)
+- [ADR-004: Use an Asynchronous Application Runtime](./ADR-004-use-an-asynchronous-application-runtime.md)
 
 ## Prerequisites
 
-To be documented during implementation.
+- Python 3.13 or newer.
+- Docker with Docker Compose for the complete local stack.
 
 ## Local Setup
 
-To be documented during implementation.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
 
 ## Running the API
 
-To be documented during implementation.
+Start PostgreSQL, apply migrations, and run the API:
+
+```bash
+docker compose up --build
+```
+
+The service is available at `http://localhost:8000`, with interactive API
+documentation at `http://localhost:8000/docs`.
+
+Health endpoints:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+```
+
+To run the API process directly while keeping PostgreSQL in Docker:
+
+```bash
+docker compose up -d database
+alembic upgrade head
+uvicorn app.main:app --reload
+```
+
+Create a new migration after changing SQLAlchemy models:
+
+```bash
+alembic revision --autogenerate -m "describe the change"
+alembic upgrade head
+```
 
 ## API Usage
 
