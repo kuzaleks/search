@@ -76,7 +76,35 @@ alembic upgrade head
 
 ## API Usage
 
-Example requests and responses will be added as endpoints are implemented.
+Create a client:
+
+```bash
+curl -i -X POST http://localhost:8000/clients \
+  -H "Content-Type: application/json" \
+  -d '{
+    "first_name": "John",
+    "last_name": "Doe",
+    "email": "john.doe@neviswealth.com",
+    "description": "Wealth management client",
+    "social_links": ["https://www.linkedin.com/in/john-doe"]
+  }'
+```
+
+The endpoint returns `201 Created`:
+
+```json
+{
+  "id": "e936cab6-800f-45f9-994a-2c0d7da522b3",
+  "first_name": "John",
+  "last_name": "Doe",
+  "email": "john.doe@neviswealth.com",
+  "description": "Wealth management client",
+  "social_links": ["https://www.linkedin.com/in/john-doe"]
+}
+```
+
+Emails are normalized to lowercase and must be unique regardless of case. A
+duplicate returns `409 Conflict`.
 
 ## Running Tests
 

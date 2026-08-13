@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel
 
+from app.api import router
 from app.config import get_settings
 from app.database import close_database, database_is_ready
 
@@ -28,6 +29,7 @@ app = FastAPI(
     version=settings.app_version,
     lifespan=lifespan,
 )
+app.include_router(router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
