@@ -95,4 +95,10 @@ class DocumentChunk(Base):
             name="ck_document_chunks_offsets_ordered",
         ),
         Index("ix_document_chunks_document_id", document_id),
+        Index(
+            "ix_document_chunks_embedding_hnsw",
+            embedding,
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
     )

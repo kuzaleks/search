@@ -130,6 +130,40 @@ stored twice. The endpoint returns `404` for an unknown client, `503` when the
 embedding provider is not configured, and `502` when embedding generation
 fails.
 
+Search clients and documents:
+
+```bash
+curl "http://localhost:8000/search?q=address%20proof&limit=10"
+```
+
+The response keeps lexical client scores and semantic document scores in
+separate ranked collections because the two scores are not directly
+comparable:
+
+```json
+{
+  "query": "address proof",
+  "clients": [],
+  "documents": [
+    {
+      "score": 0.41,
+      "document": {
+        "id": "...",
+        "client_id": "...",
+        "title": "Electricity statement",
+        "created_at": "2026-08-13T19:00:00Z"
+      },
+      "snippet": "Electricity utility bill for John Doe..."
+    }
+  ]
+}
+```
+
+Client search supports case-insensitive exact, substring, and typo-tolerant
+trigram matches across names, email, and description. Document search embeds
+the query and ranks the nearest document chunks by cosine similarity. `limit`
+defaults to 10 and accepts values from 1 to 50 for each result collection.
+
 ## Running Tests
 
 The unit tests use fake embeddings and do not require an OpenAI API key:

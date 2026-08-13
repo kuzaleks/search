@@ -53,3 +53,29 @@ class DocumentResponse(BaseModel):
     title: str
     content: str
     created_at: datetime
+
+
+class ClientSearchResult(BaseModel):
+    score: float
+    client: ClientResponse
+
+
+class DocumentSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    client_id: UUID
+    title: str
+    created_at: datetime
+
+
+class DocumentSearchResult(BaseModel):
+    score: float
+    document: DocumentSummary
+    snippet: str
+
+
+class SearchResponse(BaseModel):
+    query: str
+    clients: list[ClientSearchResult]
+    documents: list[DocumentSearchResult]

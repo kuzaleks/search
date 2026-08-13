@@ -2,7 +2,7 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,9 +18,13 @@ from app.models import Client, Document, DocumentChunk
 from app.schemas import (
     ClientCreate,
     ClientResponse,
+    ClientSearchResult,
     DocumentCreate,
     DocumentResponse,
+    DocumentSearchResult,
+    SearchResponse,
 )
+from app.search import search_clients, search_documents
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +34,27 @@ EmbeddingProvider = Annotated[
     OpenAIEmbeddingProvider,
     Depends(get_embedding_provider),
 ]
+SearchQuery = Annotated[str, Query(min_length=1, max_length=500)]
+SearchLimit = Annotated[int, Query(ge=1, le=50)]
+
+
+async def generate_embeddings(
+    embedding_provider: OpenAIEmbeddingProvider,
+    texts: list[str],
+) -> list[list[float]]:
+    try:
+        return await embedding_provider.embed(texts)
+    except EmbeddingConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding provider is not configured",
+        ) from error
+    except EmbeddingProviderError as error:
+        logger.warning("Embedding generation failed: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Embedding generation failed",
+        ) from error
 
 
 @router.post(
@@ -99,21 +124,10 @@ async def create_document(
     await session.rollback()
     chunks = chunk_text(document_data.content)
 
-    try:
-        embeddings = await embedding_provider.embed(
-            [chunk.text for chunk in chunks]
-        )
-    except EmbeddingConfigurationError as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Embedding provider is not configured",
-        ) from error
-    except EmbeddingProviderError as error:
-        logger.warning("Embedding generation failed: %s", error)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Embedding generation failed",
-        ) from error
+    embeddings = await generate_embeddings(
+        embedding_provider,
+        [chunk.text for chunk in chunks],
+    )
 
     document = Document(
         client_id=client_id,
@@ -135,3 +149,56 @@ async def create_document(
     await session.commit()
 
     return document
+
+
+@router.get(
+    "/search",
+    response_model=SearchResponse,
+    responses={
+        status.HTTP_502_BAD_GATEWAY: {
+            "description": "Embedding provider failed"
+        },
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "description": "Embedding provider is not configured"
+        },
+    },
+    tags=["search"],
+)
+async def search(
+    q: SearchQuery,
+    session: DatabaseSession,
+    embedding_provider: EmbeddingProvider,
+    limit: SearchLimit = 10,
+) -> SearchResponse:
+    query = q.strip()
+    if not query:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Search query must not be blank",
+        )
+
+    client_matches = await search_clients(session, query, limit)
+    query_embedding = (
+        await generate_embeddings(embedding_provider, [query])
+    )[0]
+    document_matches = await search_documents(
+        session,
+        query_embedding,
+        limit,
+    )
+
+    return SearchResponse(
+        query=query,
+        clients=[
+            ClientSearchResult(score=match.score, client=match.client)
+            for match in client_matches
+        ],
+        documents=[
+            DocumentSearchResult(
+                score=match.score,
+                document=match.document,
+                snippet=match.snippet,
+            )
+            for match in document_matches
+        ],
+    )
