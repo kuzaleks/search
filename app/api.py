@@ -3,6 +3,8 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import cast, func
+from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,7 +26,7 @@ from app.schemas import (
     DocumentSearchResult,
     SearchResponse,
 )
-from app.search import search_clients, search_documents
+from app.search import hybrid_search_documents, search_clients
 
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,10 @@ async def create_document(
                 start_offset=chunk.start_offset,
                 end_offset=chunk.end_offset,
                 embedding=embedding,
+                search_vector=func.to_tsvector(
+                    cast("english", REGCONFIG),
+                    chunk.text,
+                ),
             )
             for index, (chunk, embedding) in enumerate(
                 zip(chunks, embeddings, strict=True)
@@ -177,12 +183,13 @@ async def search(
             detail="Search query must not be blank",
         )
 
-    client_matches = await search_clients(session, query, limit)
     query_embedding = (
         await generate_embeddings(embedding_provider, [query])
     )[0]
-    document_matches = await search_documents(
+    client_matches = await search_clients(session, query, limit)
+    document_matches = await hybrid_search_documents(
         session,
+        query,
         query_embedding,
         limit,
     )

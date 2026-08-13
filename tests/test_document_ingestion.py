@@ -69,6 +69,9 @@ class DocumentIngestionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(document.chunks[0].start_offset, 0)
         self.assertEqual(document.chunks[1].start_offset, 3040)
+        self.assertTrue(
+            all(chunk.search_vector is not None for chunk in document.chunks)
+        )
 
     async def test_unknown_client_returns_404_before_embedding(self) -> None:
         session = FakeSession(client=None)

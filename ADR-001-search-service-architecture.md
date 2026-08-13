@@ -133,6 +133,45 @@ duplication caused by chunk overlap.
 - Combine document rankings using reciprocal-rank fusion.
 - Group matching chunks by document and return the best snippet.
 
+Document full-text search uses PostgreSQL's English text-search configuration
+and stores only `tsvector` values for chunks. Titles have their own generated
+`tsvector` and receive greater lexical weight than body matches. Semantic and
+lexical candidate lists are combined using reciprocal-rank fusion with
+`k = 60`, avoiding direct comparison of unrelated raw score scales. Returned
+snippets are reconstructed from offsets and capped at approximately 320
+characters.
+
+### Implemented Search Capabilities
+
+Client retrieval provides:
+
+- Case-insensitive exact matching across first name, last name, full name, and
+  email.
+- Substring matching across names, email, and description.
+- Typo-tolerant metadata matching with `pg_trgm`.
+
+Document retrieval provides:
+
+- Weighted English full-text search over titles and chunk content, including
+  stemming and stop-word handling.
+- Typo-tolerant and substring title matching with `pg_trgm`.
+- Web-style lexical queries with ordinary AND terms, quoted phrases, `OR`, and
+  `-` exclusions through `websearch_to_tsquery`.
+- Semantic chunk search using OpenAI embeddings and pgvector cosine distance.
+- Chunk-level retrieval with one result per document, selected from its best
+  matching candidates.
+- Hybrid ranking through reciprocal-rank fusion, which rewards documents found
+  by both lexical and semantic retrieval.
+
+The API returns client and document rankings separately because their scores
+are not comparable. Document results include bounded snippets reconstructed
+from offsets and centered on lexical terms when available. The `limit`
+parameter defaults to 10, accepts values from 1 to 50, and blank or overlong
+queries are rejected.
+
+PostgreSQL accelerates these paths with GIN indexes for title and chunk FTS, a
+GIN trigram index for document titles, and an HNSW cosine index for embeddings.
+
 The response will contain separate client and document collections:
 
 ```json

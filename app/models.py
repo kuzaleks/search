@@ -7,6 +7,7 @@ from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     ARRAY,
     CheckConstraint,
+    Computed,
     DateTime,
     ForeignKey,
     Index,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.config import EMBEDDING_DIMENSIONS
@@ -53,6 +55,10 @@ class Document(Base):
     )
     title: Mapped[str] = mapped_column(String(500))
     content: Mapped[str] = mapped_column(Text)
+    title_search_vector: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', coalesce(title, ''))", persisted=True),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -63,7 +69,20 @@ class Document(Base):
         cascade="all, delete-orphan",
     )
 
-    __table_args__ = (Index("ix_documents_client_id", client_id),)
+    __table_args__ = (
+        Index("ix_documents_client_id", client_id),
+        Index(
+            "ix_documents_title_search_vector",
+            title_search_vector,
+            postgresql_using="gin",
+        ),
+        Index(
+            "ix_documents_title_trgm",
+            title,
+            postgresql_using="gin",
+            postgresql_ops={"title": "gin_trgm_ops"},
+        ),
+    )
 
 
 class DocumentChunk(Base):
@@ -77,6 +96,7 @@ class DocumentChunk(Base):
     start_offset: Mapped[int] = mapped_column(Integer)
     end_offset: Mapped[int] = mapped_column(Integer)
     embedding: Mapped[list[float]] = mapped_column(VECTOR(EMBEDDING_DIMENSIONS))
+    search_vector: Mapped[str] = mapped_column(TSVECTOR)
 
     document: Mapped[Document] = relationship(back_populates="chunks")
 
@@ -100,5 +120,10 @@ class DocumentChunk(Base):
             embedding,
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        Index(
+            "ix_document_chunks_search_vector",
+            search_vector,
+            postgresql_using="gin",
         ),
     )

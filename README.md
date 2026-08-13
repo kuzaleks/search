@@ -160,9 +160,14 @@ comparable:
 ```
 
 Client search supports case-insensitive exact, substring, and typo-tolerant
-trigram matches across names, email, and description. Document search embeds
-the query and ranks the nearest document chunks by cosine similarity. `limit`
-defaults to 10 and accepts values from 1 to 50 for each result collection.
+trigram matches across names, email, and description. Document search combines
+English full-text matches over titles and chunk content with cosine similarity
+over chunk embeddings. Title matches receive additional lexical weight, and
+reciprocal-rank fusion combines lexical and semantic rankings without treating
+their raw scores as comparable. Snippets are reconstructed from chunk offsets,
+centered on matching lexical terms when possible, and limited to approximately
+320 characters. `limit` defaults to 10 and accepts values from 1 to 50 for each
+result collection.
 
 ## Running Tests
 
