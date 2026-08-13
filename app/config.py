@@ -1,7 +1,12 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIMENSIONS = 512
 
 
 class Settings(BaseSettings):
@@ -12,6 +17,8 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://search:search@localhost:5432/search"
     )
     log_level: str = "INFO"
+    openai_api_key: SecretStr | None = None
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

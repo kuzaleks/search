@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -35,3 +36,20 @@ class ClientResponse(BaseModel):
     email: EmailStr
     description: str | None
     social_links: list[str]
+
+
+class DocumentCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=100_000)
+
+
+class DocumentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    client_id: UUID
+    title: str
+    content: str
+    created_at: datetime

@@ -85,13 +85,28 @@ PostgreSQL
 - UUID `id`
 - `document_id` foreign key
 - `chunk_index`
-- chunk `content`
+- inclusive `start_offset` and exclusive `end_offset`
 - embedding vector
 - searchable text vector
 
-Documents will be divided into approximately 500-token chunks with a small
-overlap. Chunking improves retrieval precision and prevents large documents
-from exceeding embedding-provider limits.
+Documents will be divided at word boundaries into 400-word chunks with a
+50-word overlap, approximately 500 tokens depending on the text. Chunking
+improves retrieval precision and prevents large documents from exceeding
+embedding-provider limits. OpenAI's `text-embedding-3-small` will generate
+512-dimensional vectors, reducing storage relative to its full-size output.
+
+### Document Text Storage
+
+Store the original document text once in PostgreSQL. Chunk rows retain character
+offsets, embeddings, and searchable text vectors rather than duplicate chunk
+text. Matching snippets are reconstructed from `documents.content` using the
+inclusive start and exclusive end offsets. This is safe because document
+updates are out of scope, so offsets cannot become stale.
+
+PostgreSQL persists the original `TEXT` on disk and can compress or move larger
+values out of the main row through TOAST. Keeping the original, chunk metadata,
+and embeddings in one database preserves atomic ingestion while avoiding text
+duplication caused by chunk overlap.
 
 ## API Design
 
@@ -194,6 +209,15 @@ provider is acceptable for this assignment and keeps the service focused.
 Embedding an entire document is simpler, but produces poorer matches for mixed
 or long documents and can exceed provider token limits. Chunk embeddings are
 therefore preferred.
+
+### Object Storage for Original Documents
+
+Original documents could be stored in Amazon S3 with only an object key,
+metadata, chunks, and embeddings in PostgreSQL. This would reduce database
+storage cost and is preferable for large binary files, substantially larger
+documents, or significantly greater volume. It is not selected now because it
+adds another service, consistency and failure handling across two stores, and
+extra retrieval latency without a clear benefit at the expected document size.
 
 ### Single Mixed Result List
 

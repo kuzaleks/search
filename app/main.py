@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.api import router
 from app.config import get_settings
 from app.database import close_database, database_is_ready
+from app.embeddings import close_embedding_provider
 
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,10 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
-    await close_database()
+    try:
+        await close_embedding_provider()
+    finally:
+        await close_database()
 
 
 app = FastAPI(

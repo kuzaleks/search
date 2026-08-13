@@ -41,6 +41,10 @@ python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
+Set `OPENAI_API_KEY` in `.env`. Document ingestion uses
+`text-embedding-3-small`; the key is passed to the API container at runtime and
+is not included in the image.
+
 ## Running the API
 
 Start PostgreSQL, apply migrations, and run the API:
@@ -106,9 +110,33 @@ The endpoint returns `201 Created`:
 Emails are normalized to lowercase and must be unique regardless of case. A
 duplicate returns `409 Conflict`.
 
+Add a document to a client:
+
+```bash
+curl -i -X POST \
+  http://localhost:8000/clients/CLIENT_ID/documents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Electricity statement",
+    "content": "Account holder John Doe. Service address: 10 High Street."
+  }'
+```
+
+The endpoint validates that the client exists, splits the content into
+overlapping chunks, generates their embeddings in one request, and stores the
+document with chunk offsets and embeddings in one database transaction. Chunk
+text is reconstructed from the original document when needed rather than being
+stored twice. The endpoint returns `404` for an unknown client, `503` when the
+embedding provider is not configured, and `502` when embedding generation
+fails.
+
 ## Running Tests
 
-To be documented during implementation.
+The unit tests use fake embeddings and do not require an OpenAI API key:
+
+```bash
+python -m unittest discover -s tests
+```
 
 ## AWS Deployment
 

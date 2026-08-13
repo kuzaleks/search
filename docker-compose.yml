@@ -33,6 +33,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-search}:${POSTGRES_PASSWORD:-search}@database:5432/${POSTGRES_DB:-search}
       ENVIRONMENT: local
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-30}
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:
