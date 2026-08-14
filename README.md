@@ -26,10 +26,12 @@ Architecture decisions:
 - [ADR-002: Use PostgreSQL for Search](./ADR-002-use-postgresql-for-search.md)
 - [ADR-003: Design for AWS Deployment](./ADR-003-design-for-aws-deployment.md)
 - [ADR-004: Use an Asynchronous Application Runtime](./ADR-004-use-an-asynchronous-application-runtime.md)
+- [ADR-005: Optimize Search Candidate Retrieval](./ADR-005-optimize-search-candidate-retrieval.md)
 
 Manual verification:
 
 - [Search Features and Manual Test Guide](./SEARCH_FEATURES.md)
+- [Search Performance Baseline](./PERFORMANCE_RESULTS.md)
 
 ## Prerequisites
 
@@ -200,6 +202,69 @@ The unit tests use fake embeddings and do not require an OpenAI API key:
 
 ```bash
 python -m unittest discover -s tests
+```
+
+## Performance Test Data
+
+The performance-data utility bulk-loads tagged synthetic records directly into
+PostgreSQL. It creates local 512-dimensional topic vectors, so loading does not
+call OpenAI. These vectors exercise vector storage and HNSW search performance,
+but they are not suitable for evaluating semantic relevance against OpenAI
+query embeddings.
+
+Keep the API stopped during large loads and start PostgreSQL:
+
+```bash
+docker compose stop api
+docker compose up -d database
+```
+
+Create the baseline run of 1,000 clients, 10 documents per client, and 10,000
+bytes per document:
+
+```bash
+.venv/bin/python -m scripts.performance_data load \
+  --run-id baseline10k \
+  --clients 1000 \
+  --documents-per-client 10 \
+  --document-size-bytes 10000
+```
+
+The run ID is encoded in generated addresses under the dedicated
+`performance-test.nevis.dev` domain. Inspect runs, row counts, and relation
+sizes:
+
+```bash
+.venv/bin/python -m scripts.performance_data status
+```
+
+Delete one run through the existing client-document cascade:
+
+```bash
+.venv/bin/python -m scripts.performance_data delete --run-id baseline10k
+```
+
+Normal deletion makes the space reusable by PostgreSQL. Add `--compact` to
+rewrite and lock the affected tables with `VACUUM FULL`, returning unused table
+files to Docker:
+
+```bash
+.venv/bin/python -m scripts.performance_data delete \
+  --run-id baseline10k \
+  --compact
+```
+
+Delete and compact every tagged performance run with:
+
+```bash
+.venv/bin/python -m scripts.performance_data delete --all --compact
+```
+
+Run the end-to-end and database-only benchmarks with:
+
+```bash
+.venv/bin/python -m scripts.benchmark_search
+.venv/bin/python -m scripts.benchmark_database
 ```
 
 ## AWS Deployment
