@@ -204,6 +204,23 @@ The unit tests use fake embeddings and do not require an OpenAI API key:
 python -m unittest discover -s tests
 ```
 
+PostgreSQL integration tests are opt-in, use the configured local database, and
+do not require an OpenAI API key. Start PostgreSQL, then enable them explicitly:
+
+```bash
+docker compose up -d database
+RUN_POSTGRES_TESTS=1 python -m unittest discover \
+  -s tests/integration \
+  -v
+```
+
+Each integration test runs in its own outer transaction and rolls back all
+fixtures. The suite refuses to run when `ENVIRONMENT=production`. It verifies
+the required extensions and indexes, client exact and typo matching, title and
+content FTS, stemming, web-query syntax, semantic nearest-chunk retrieval,
+document deduplication, hybrid ranking, snippets, and the complete FastAPI
+search response using a fake embedding provider.
+
 ## Performance Test Data
 
 The performance-data utility bulk-loads tagged synthetic records directly into
