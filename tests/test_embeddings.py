@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ from app.config import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL
 from app.embeddings import (
     EmbeddingConfigurationError,
     EmbeddingProviderError,
+    EmbeddingTimeoutError,
     OpenAIEmbeddingProvider,
 )
 
@@ -26,6 +28,17 @@ class FakeOpenAIClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class SlowEmbeddings:
+    async def create(self, **kwargs):
+        await asyncio.sleep(1)
+
+
+class SlowOpenAIClient(FakeOpenAIClient):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.embeddings = SlowEmbeddings()
 
 
 class OpenAIEmbeddingProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -75,6 +88,20 @@ class OpenAIEmbeddingProviderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(EmbeddingProviderError):
+            await provider.embed(["chunk"])
+
+    async def test_enforces_overall_embedding_timeout(self) -> None:
+        provider = OpenAIEmbeddingProvider(
+            api_key=None,
+            timeout=0.001,
+            max_retries=1,
+            client=SlowOpenAIClient(),
+        )
+
+        with self.assertRaisesRegex(
+            EmbeddingTimeoutError,
+            "timed out after 0.001 seconds",
+        ):
             await provider.embed(["chunk"])
 
 

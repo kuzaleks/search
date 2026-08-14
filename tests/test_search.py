@@ -16,6 +16,7 @@ from app.search import (
     search_clients,
     search_lexical_documents,
     search_semantic_documents,
+    search_title_documents,
 )
 
 
@@ -128,6 +129,7 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         session = FakeSession(
             [
+                [],
                 [(document, 0.9)],
                 [(document, 0.5, 5, 58)],
             ]
@@ -155,6 +157,7 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         session = FakeSession(
             [
+                [],
                 [(title_only, 0.9), (content_match, 0.8)],
                 [(content_match, 0.6, 7, 40)],
             ]
@@ -176,6 +179,22 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
             matches[1].snippet,
             "electricity confirms the address.",
         )
+
+    async def test_exact_title_short_circuits_fuzzy_title_search(self) -> None:
+        document = make_document("Utility Bill", "Opening text")
+        session = FakeSession([[(document,)]])
+
+        matches = await search_title_documents(
+            session,
+            "UTILITY BILL",
+            candidate_limit=100,
+        )
+
+        self.assertEqual(
+            matches,
+            [DocumentMatch(document, 1.0, "Opening text")],
+        )
+        self.assertEqual(session.execute_count, 1)
 
     async def test_rrf_rewards_documents_found_by_both_rankings(self) -> None:
         hybrid_document = make_document("Utility bill", "utility content")
@@ -217,18 +236,20 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
                 [],
                 [(client, 0.85)],
                 [(document, 0.1, 0, len(document.content))],
+                [],
                 [(document, 0.9)],
                 [(document, 0.5, 0, len(document.content))],
             ]
         )
         provider = FakeEmbeddingProvider()
 
-        response = await search(
-            q=" address proof ",
-            session=session,
-            embedding_provider=provider,
-            limit=10,
-        )
+        with self.assertLogs("app.api", level="INFO") as logs:
+            response = await search(
+                q=" address proof ",
+                session=session,
+                embedding_provider=provider,
+                limit=10,
+            )
 
         self.assertEqual(response.query, "address proof")
         self.assertEqual(provider.texts, ["address proof"])
@@ -238,6 +259,10 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
             response.documents[0].snippet,
             "address confirmation",
         )
+        self.assertIn("embedding_ms=", logs.output[0])
+        self.assertIn("semantic_ms=", logs.output[0])
+        self.assertIn("lexical_ms=", logs.output[0])
+        self.assertIn("response_build_ms=", logs.output[0])
 
     async def test_blank_query_is_rejected_before_search(self) -> None:
         session = FakeSession([])

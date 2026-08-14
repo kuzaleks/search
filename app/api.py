@@ -1,4 +1,5 @@
 import logging
+from time import perf_counter
 from typing import Annotated
 from uuid import UUID
 
@@ -27,7 +28,11 @@ from app.schemas import (
     DocumentSearchResult,
     SearchResponse,
 )
-from app.search import hybrid_search_documents, search_clients
+from app.search import (
+    DocumentSearchTimings,
+    hybrid_search_documents,
+    search_clients,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -264,18 +269,29 @@ async def search(
             message="Search query must not be blank",
         )
 
+    request_started = perf_counter()
+
+    phase_started = perf_counter()
     query_embedding = (
         await generate_embeddings(embedding_provider, [query])
     )[0]
+    embedding_ms = (perf_counter() - phase_started) * 1_000
+
+    phase_started = perf_counter()
     client_matches = await search_clients(session, query, limit)
+    client_ms = (perf_counter() - phase_started) * 1_000
+
+    document_timings = DocumentSearchTimings()
     document_matches = await hybrid_search_documents(
         session,
         query,
         query_embedding,
         limit,
+        timings=document_timings,
     )
 
-    return SearchResponse(
+    phase_started = perf_counter()
+    response = SearchResponse(
         query=query,
         clients=[
             ClientSearchResult(score=match.score, client=match.client)
@@ -290,3 +306,20 @@ async def search(
             for match in document_matches
         ],
     )
+    response_build_ms = (perf_counter() - phase_started) * 1_000
+    total_ms = (perf_counter() - request_started) * 1_000
+    logger.info(
+        "Search completed total_ms=%.1f embedding_ms=%.1f client_ms=%.1f "
+        "semantic_ms=%.1f lexical_ms=%.1f fusion_ms=%.1f "
+        "response_build_ms=%.1f clients=%d documents=%d",
+        total_ms,
+        embedding_ms,
+        client_ms,
+        document_timings.semantic_ms,
+        document_timings.lexical_ms,
+        document_timings.fusion_ms,
+        response_build_ms,
+        len(client_matches),
+        len(document_matches),
+    )
+    return response

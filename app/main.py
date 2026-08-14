@@ -14,6 +14,12 @@ from app.errors import APIError, documented_error, install_error_handlers
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+app_logger = logging.getLogger("app")
+app_logger.setLevel(settings.log_level.upper())
+uvicorn_handlers = logging.getLogger("uvicorn").handlers
+if uvicorn_handlers:
+    app_logger.handlers = uvicorn_handlers
+    app_logger.propagate = False
 OPENAPI_TAGS = [
     {
         "name": "system",

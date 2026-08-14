@@ -130,16 +130,88 @@ The first correctness gate returned four HTTP 500 responses because bulk-loaded
 validation. Generated addresses now use `performance-test.nevis.dev`, and a
 regression test validates them against the API schema.
 
-## Recommended Next Steps
+## Optimized Results
 
-1. Split lexical title and chunk retrieval into independently indexable queries,
-   then merge and deduplicate their candidate rankings.
-2. Split exact client lookup from fuzzy lookup and add appropriate trigram
-   indexes for the fuzzy candidate fields.
-3. Add phase timings for embedding, client SQL, semantic SQL, lexical SQL, and
-   serialization to make external-provider stalls observable.
-4. Repeat the same benchmark after query changes, then test higher concurrency
-   and the 100,000-document dataset.
+The optimized implementation uses indexed candidate retrieval, an exact-email
+short circuit, an exact-title short circuit, and bounded fuzzy candidates. The
+following measurements use the same `baseline10k` data and benchmark settings
+as the baseline tables above.
+
+### PostgreSQL After Optimization
+
+| Case | Valid | Mean | p50 | p95 | Max |
+|---|---:|---:|---:|---:|---:|
+| Exact client email | 20/20 | 0.6 ms | 0.6 ms | 0.7 ms | 0.7 ms |
+| Typo client | 20/20 | 40.4 ms | 37.3 ms | 57.2 ms | 57.4 ms |
+| Semantic chunks | 20/20 | 10.1 ms | 10.3 ms | 12.8 ms | 13.5 ms |
+| Exact document title | 20/20 | 8.5 ms | 8.5 ms | 9.4 ms | 12.6 ms |
+| Typo document title | 20/20 | 68.4 ms | 64.5 ms | 89.3 ms | 101.5 ms |
+| Document content FTS | 20/20 | 69.5 ms | 68.9 ms | 72.1 ms | 76.9 ms |
+| Web query syntax | 20/20 | 90.5 ms | 90.5 ms | 93.1 ms | 94.2 ms |
+| Hybrid document | 20/20 | 98.5 ms | 97.4 ms | 102.7 ms | 103.9 ms |
+| No lexical match | 20/20 | 38.3 ms | 38.1 ms | 39.9 ms | 40.8 ms |
+
+Overall database reliability was 180/180, or 100%.
+
+### Sequential API After Optimization
+
+| Case | Valid | Mean | p50 | p95/max |
+|---|---:|---:|---:|---:|
+| Exact client email | 10/10 | 220.2 ms | 220.3 ms | 237.2 ms |
+| Typo client | 10/10 | 231.2 ms | 230.8 ms | 255.4 ms |
+| Exact document title | 10/10 | 208.0 ms | 184.3 ms | 383.5 ms |
+| Typo document title | 10/10 | 247.7 ms | 237.6 ms | 323.9 ms |
+| Document content FTS | 10/10 | 246.8 ms | 232.7 ms | 368.2 ms |
+| Web query syntax | 10/10 | 245.7 ms | 239.6 ms | 270.9 ms |
+| Hybrid document | 10/10 | 238.6 ms | 234.3 ms | 270.0 ms |
+| No lexical match | 10/10 | 218.5 ms | 215.5 ms | 299.9 ms |
+
+Overall sequential reliability was 80/80, or 100%.
+
+### Concurrent API After Optimization
+
+| Case | Valid | Mean | p50 | p95 | Max | Throughput |
+|---|---:|---:|---:|---:|---:|---:|
+| Exact client email | 20/20 | 224.0 ms | 206.0 ms | 310.0 ms | 312.6 ms | 20.86 req/s |
+| Typo client | 20/20 | 250.9 ms | 245.4 ms | 280.2 ms | 281.1 ms | 18.80 req/s |
+| Exact document title | 20/20 | 185.6 ms | 185.5 ms | 218.3 ms | 223.4 ms | 26.44 req/s |
+| Typo document title | 20/20 | 241.0 ms | 240.4 ms | 282.7 ms | 286.0 ms | 19.79 req/s |
+| Document content FTS | 20/20 | 237.1 ms | 237.7 ms | 262.2 ms | 265.3 ms | 20.46 req/s |
+| Web query syntax | 20/20 | 250.6 ms | 252.2 ms | 258.5 ms | 316.9 ms | 18.72 req/s |
+| Hybrid document | 20/20 | 261.4 ms | 245.3 ms | 317.0 ms | 319.9 ms | 17.44 req/s |
+| No lexical match | 20/20 | 201.8 ms | 201.8 ms | 214.2 ms | 223.6 ms | 23.49 req/s |
+
+Overall concurrency-five reliability was 160/160, or 100%. No provider timeout
+or application error was logged.
+
+### Query Plans and Attribution
+
+`EXPLAIN (ANALYZE, BUFFERS)` confirms:
+
+- `uq_clients_email_lower` serves exact email lookup.
+- `ix_documents_title_search_vector` serves title FTS candidates.
+- `ix_document_chunks_search_vector` serves content FTS candidates.
+- The HNSW index continues to serve semantic candidates.
+
+PostgreSQL still chooses sequential scans for broad fuzzy title and client
+queries on this dataset because many generated records are intentionally
+similar. The trigram indexes are available, but the planner estimates a scan as
+cheaper at 1,000 clients and 10,000 titles.
+
+Each completed API search now logs total, embedding, client, semantic, lexical,
+fusion, and response-construction durations without logging the search text in
+the structured record. The embedding operation has a 30-second overall default
+deadline and one explicit SDK retry by default. This prevents retries from
+multiplying the request deadline and makes provider stalls attributable.
+
+## Follow-up Opportunities
+
+1. Repeat the benchmark with 100,000 documents to observe the planner's index
+   choices at the upper expected data range.
+2. Evaluate a GiST trigram index if fuzzy-title latency becomes important; it
+   can support nearest-neighbor similarity ordering directly.
+3. Export phase timings to a metrics backend if production percentile alerts
+   are required.
 
 ## Reproducing
 

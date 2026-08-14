@@ -49,7 +49,9 @@ cp .env.example .env
 
 Set `OPENAI_API_KEY` in `.env`. Document ingestion uses
 `text-embedding-3-small`; the key is passed to the API container at runtime and
-is not included in the image.
+is not included in the image. `EMBEDDING_TIMEOUT_SECONDS` bounds the complete
+provider operation, including retries, and `EMBEDDING_MAX_RETRIES` controls the
+OpenAI SDK retry count.
 
 ## Running the API
 

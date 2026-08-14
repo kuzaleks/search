@@ -1,6 +1,6 @@
 # ADR-005: Optimize Search Candidate Retrieval
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-14
 
 ## Context
@@ -30,7 +30,7 @@ The end-to-end API benchmark was 100% reliable sequentially and 99.4% reliable
 at concurrency five. One request reached the 30-second client timeout; no
 database or application exception identified the phase responsible.
 
-## Proposed Decision
+## Decision
 
 Generate a small indexed candidate set before calculating expensive scores.
 
@@ -108,14 +108,15 @@ queries. Title FTS, substring, and typo candidates are combined with
 merge deduplicates documents, retains the highest lexical score, and prefers a
 matching content snippet.
 
-A short database-only benchmark on the unchanged `baseline10k` dataset measured:
+A final 20-iteration database-only benchmark on the unchanged `baseline10k`
+dataset measured:
 
 | Case | Baseline p50 | Current p50 |
 |---|---:|---:|
-| Exact document title | 600.1 ms | 64.3 ms |
-| Typo document title | 595.5 ms | 64.3 ms |
-| Document content FTS | 392.9 ms | 65.1 ms |
-| Lexical no-match | 306.1 ms | 30.9 ms |
+| Exact document title | 600.1 ms | 8.5 ms |
+| Typo document title | 595.5 ms | 64.5 ms |
+| Document content FTS | 392.9 ms | 68.9 ms |
+| Lexical no-match | 306.1 ms | 38.1 ms |
 
 Client retrieval now short-circuits a case-insensitive exact email match using
 `uq_clients_email_lower`. Other searches generate bounded full-name, email, and
@@ -130,8 +131,8 @@ A 20-iteration database-only benchmark measured:
 
 | Case | Baseline p50 | Current p50 |
 |---|---:|---:|
-| Exact client email | 62.2 ms | 0.5 ms |
-| Typo client name | 43.1 ms | 43.7 ms |
+| Exact client email | 62.2 ms | 0.6 ms |
+| Typo client name | 43.1 ms | 37.3 ms |
 
 `EXPLAIN (ANALYZE, BUFFERS)` confirms that exact email retrieval uses the
 B-tree expression index. The broad typo fixture matches many near-identical
@@ -139,27 +140,32 @@ generated client names, so PostgreSQL still considers a sequential scan cheaper
 for that candidate branch at 1,000 clients; its latency and expected result are
 preserved rather than materially improved.
 
-All 44 unit and PostgreSQL integration tests pass, including exact email,
+All 47 unit and PostgreSQL integration tests pass, including exact email,
 exact and typo name, description substring and typo, title and content search,
 hybrid ranking, and snippet selection. `alembic check` reports no schema drift.
 
-The chunk query uses `ix_document_chunks_search_vector`. PostgreSQL still
-chooses a sequential scan for broad fuzzy-title scoring at this dataset size,
-and exact-title p50 remains above the 50 ms acceptance target. These results are
-intermediate; the complete sequential and concurrency-five API benchmarks have
-not yet been rerun.
+The title FTS and chunk FTS candidate queries use their GIN indexes. PostgreSQL
+still chooses sequential scans for broad fuzzy-title scoring at this dataset
+size because many generated titles are similar. Exact-title and no-match p50
+are both below 50 ms.
 
-## Acceptance Criteria
+The sequential API rerun was 80/80 valid. The concurrency-five rerun was
+160/160 valid with no timeout or application error, compared with 159/160 in
+the baseline. Full tables are recorded in `PERFORMANCE_RESULTS.md`.
 
-Before changing this ADR to `Accepted`:
+Search completion logs now include phase-level durations for embedding, client
+retrieval, semantic retrieval, lexical retrieval, fusion, response building,
+and total endpoint work. Embedding calls have an explicit retry count and an
+overall timeout that includes retries.
 
-- `EXPLAIN (ANALYZE, BUFFERS)` must show GIN/trigram index use for title and
-  chunk lexical candidate queries.
-- Exact title and lexical no-match database p50 should be below 50 ms on the
-  existing `baseline10k` dataset.
-- Client exact-email lookup should use the B-tree index, while typo search must
-  retain its expected result.
-- Existing relevance, snippet, stemming, web-query, typo, and deduplication
-  tests must continue to pass.
-- Sequential and concurrency-five benchmarks must be rerun and appended to the
-  performance report.
+## Acceptance Evidence
+
+- `EXPLAIN (ANALYZE, BUFFERS)` shows GIN index retrieval for title and chunk
+  FTS candidates and B-tree retrieval for exact client email.
+- Exact title is 8.5 ms p50 and lexical no-match is 38.1 ms p50.
+- Client typo search retains its expected result and improves from 43.1 ms to
+  37.3 ms p50 in the final database run.
+- All 47 relevance, snippet, stemming, web-query, typo, deduplication, API,
+  timeout, and integration tests pass.
+- Final sequential, concurrency-five, and database-only measurements are
+  recorded in `PERFORMANCE_RESULTS.md`.

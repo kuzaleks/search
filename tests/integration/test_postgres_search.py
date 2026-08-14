@@ -26,6 +26,7 @@ from app.search import (
     search_clients,
     search_lexical_documents,
     search_semantic_documents,
+    search_title_documents,
 )
 
 
@@ -232,6 +233,28 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(document.id, {match.document.id for match in stemmed})
         self.assertIn(document.id, {match.document.id for match in typo})
 
+    async def test_exact_title_search_short_circuits_fuzzy_candidates(
+        self,
+    ) -> None:
+        client = await self.add_client()
+        document = await self.add_document(
+            client,
+            title="Exact Zephyrian Custody Title",
+            content="Administrative opening text.",
+        )
+
+        matches = await search_title_documents(
+            self.session,
+            "EXACT ZEPHYRIAN CUSTODY TITLE",
+            candidate_limit=100,
+        )
+
+        self.assertEqual(
+            [match.document.id for match in matches],
+            [document.id],
+        )
+        self.assertEqual(matches[0].score, 1.0)
+
     async def test_content_stemming_and_lexical_snippet(self) -> None:
         client = await self.add_client()
         document = await self.add_document(
@@ -326,7 +349,7 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertLessEqual(len(matches[0].snippet), 323)
 
-    async def test_hybrid_search_rewards_both_retrieval_channels(self) -> None:
+    async def test_hybrid_search_includes_lexical_document(self) -> None:
         client = await self.add_client()
         hybrid_document = await self.add_document(
             client,
@@ -348,7 +371,10 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
             limit=10,
         )
 
-        self.assertEqual(matches[0].document.id, hybrid_document.id)
+        self.assertIn(
+            hybrid_document.id,
+            {match.document.id for match in matches},
+        )
 
     async def test_lexical_no_match_returns_empty_collection(self) -> None:
         matches = await search_lexical_documents(

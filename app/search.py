@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from time import perf_counter
 from uuid import UUID
 
 from sqlalchemy import (
@@ -38,6 +39,13 @@ class DocumentMatch:
     document: Document
     score: float
     snippet: str
+
+
+@dataclass(slots=True)
+class DocumentSearchTimings:
+    semantic_ms: float = 0.0
+    lexical_ms: float = 0.0
+    fusion_ms: float = 0.0
 
 
 def make_snippet(
@@ -341,6 +349,29 @@ async def search_title_documents(
     query: str,
     candidate_limit: int,
 ) -> list[DocumentMatch]:
+    exact_title_rows = (
+        await session.execute(
+            select(Document)
+            .where(
+                Document.title.ilike(
+                    _escape_like(query),
+                    escape="\\",
+                )
+            )
+            .order_by(Document.id)
+            .limit(candidate_limit)
+        )
+    ).all()
+    if exact_title_rows:
+        return [
+            DocumentMatch(
+                document=row[0],
+                score=1.0,
+                snippet=make_snippet(row[0].content, query),
+            )
+            for row in exact_title_rows
+        ]
+
     text_config = cast("english", REGCONFIG)
     ts_query = func.websearch_to_tsquery(text_config, query)
     title_match = Document.title_search_vector.op("@@")(ts_query)
@@ -505,24 +536,37 @@ async def hybrid_search_documents(
     query: str,
     query_embedding: list[float],
     limit: int,
+    timings: DocumentSearchTimings | None = None,
 ) -> list[DocumentMatch]:
     candidate_limit = max(
         MINIMUM_DOCUMENT_CANDIDATES,
         limit * DOCUMENT_CANDIDATE_MULTIPLIER,
     )
+    started = perf_counter()
     semantic_matches = await search_semantic_documents(
         session,
         query_embedding,
         candidate_limit,
     )
+    if timings is not None:
+        timings.semantic_ms = (perf_counter() - started) * 1_000
+
+    started = perf_counter()
     lexical_matches = await search_lexical_documents(
         session,
         query,
         candidate_limit,
     )
+    if timings is not None:
+        timings.lexical_ms = (perf_counter() - started) * 1_000
 
-    return fuse_document_matches(
+    started = perf_counter()
+    matches = fuse_document_matches(
         semantic_matches,
         lexical_matches,
         limit,
     )
+    if timings is not None:
+        timings.fusion_ms = (perf_counter() - started) * 1_000
+
+    return matches

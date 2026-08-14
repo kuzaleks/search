@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     openai_api_key: SecretStr | None = None
     embedding_timeout_seconds: float = Field(default=30.0, gt=0)
+    embedding_max_retries: int = Field(default=1, ge=0, le=5)
 
     model_config = SettingsConfigDict(
         env_file=".env",
