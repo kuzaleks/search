@@ -2,7 +2,7 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Path, Query, status
 from sqlalchemy import cast, func
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +16,7 @@ from app.embeddings import (
     OpenAIEmbeddingProvider,
     get_embedding_provider,
 )
+from app.errors import APIError, documented_error
 from app.models import Client, Document, DocumentChunk
 from app.schemas import (
     ClientCreate,
@@ -30,14 +31,41 @@ from app.search import hybrid_search_documents, search_clients
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(
+    responses={
+        status.HTTP_500_INTERNAL_SERVER_ERROR: documented_error(
+            "Unexpected server error",
+            "internal_server_error",
+            "An unexpected error occurred",
+        )
+    }
+)
 DatabaseSession = Annotated[AsyncSession, Depends(get_session)]
 EmbeddingProvider = Annotated[
     OpenAIEmbeddingProvider,
     Depends(get_embedding_provider),
 ]
-SearchQuery = Annotated[str, Query(min_length=1, max_length=500)]
-SearchLimit = Annotated[int, Query(ge=1, le=50)]
+ClientId = Annotated[
+    UUID,
+    Path(description="Unique identifier of the client that owns the document"),
+]
+SearchQuery = Annotated[
+    str,
+    Query(
+        min_length=1,
+        max_length=500,
+        description="Text used for client and hybrid document retrieval",
+        examples=["address proof"],
+    ),
+]
+SearchLimit = Annotated[
+    int,
+    Query(
+        ge=1,
+        le=50,
+        description="Maximum results returned in each result collection",
+    ),
+]
 
 
 async def generate_embeddings(
@@ -47,15 +75,17 @@ async def generate_embeddings(
     try:
         return await embedding_provider.embed(texts)
     except EmbeddingConfigurationError as error:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Embedding provider is not configured",
+            code="embedding_provider_not_configured",
+            message="Embedding provider is not configured",
         ) from error
     except EmbeddingProviderError as error:
         logger.warning("Embedding generation failed: %s", error)
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Embedding generation failed",
+            code="embedding_provider_error",
+            message="Embedding generation failed",
         ) from error
 
 
@@ -63,10 +93,23 @@ async def generate_embeddings(
     "/clients",
     response_model=ClientResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Create a client",
+    description=(
+        "Creates a client with a case-insensitively unique email address. "
+        "Email values are normalized to lowercase before storage."
+    ),
+    response_description="The newly created client",
     responses={
-        status.HTTP_409_CONFLICT: {
-            "description": "A client with this email already exists"
-        }
+        status.HTTP_409_CONFLICT: documented_error(
+            "Client email already exists",
+            "client_already_exists",
+            "A client with this email already exists",
+        ),
+        status.HTTP_422_UNPROCESSABLE_CONTENT: documented_error(
+            "Invalid client data",
+            "validation_error",
+            "Request validation failed",
+        ),
     },
     tags=["clients"],
 )
@@ -87,9 +130,10 @@ async def create_client(
         await session.commit()
     except IntegrityError as error:
         await session.rollback()
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A client with this email already exists",
+            code="client_already_exists",
+            message="A client with this email already exists",
         ) from error
 
     return client
@@ -99,27 +143,47 @@ async def create_client(
     "/clients/{client_id}/documents",
     response_model=DocumentResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Add a document to a client",
+    description=(
+        "Splits the document into overlapping chunks, generates embeddings "
+        "in one provider request, and stores the document atomically."
+    ),
+    response_description="The ingested document",
     responses={
-        status.HTTP_404_NOT_FOUND: {"description": "Client not found"},
-        status.HTTP_502_BAD_GATEWAY: {
-            "description": "Embedding provider failed"
-        },
-        status.HTTP_503_SERVICE_UNAVAILABLE: {
-            "description": "Embedding provider is not configured"
-        },
+        status.HTTP_404_NOT_FOUND: documented_error(
+            "Client not found",
+            "client_not_found",
+            "Client not found",
+        ),
+        status.HTTP_422_UNPROCESSABLE_CONTENT: documented_error(
+            "Invalid document or client identifier",
+            "validation_error",
+            "Request validation failed",
+        ),
+        status.HTTP_502_BAD_GATEWAY: documented_error(
+            "Embedding provider request failed",
+            "embedding_provider_error",
+            "Embedding generation failed",
+        ),
+        status.HTTP_503_SERVICE_UNAVAILABLE: documented_error(
+            "Embedding provider is not configured",
+            "embedding_provider_not_configured",
+            "Embedding provider is not configured",
+        ),
     },
     tags=["documents"],
 )
 async def create_document(
-    client_id: UUID,
+    client_id: ClientId,
     document_data: DocumentCreate,
     session: DatabaseSession,
     embedding_provider: EmbeddingProvider,
 ) -> Document:
     if await session.get(Client, client_id) is None:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Client not found",
+            code="client_not_found",
+            message="Client not found",
         )
 
     # End the read transaction before waiting on the external provider.
@@ -160,13 +224,29 @@ async def create_document(
 @router.get(
     "/search",
     response_model=SearchResponse,
+    summary="Search clients and documents",
+    description=(
+        "Returns separate client and document rankings. Client retrieval uses "
+        "metadata matching; document retrieval combines full-text, trigram, "
+        "and vector search with reciprocal-rank fusion."
+    ),
+    response_description="Separate relevance-ranked client and document lists",
     responses={
-        status.HTTP_502_BAD_GATEWAY: {
-            "description": "Embedding provider failed"
-        },
-        status.HTTP_503_SERVICE_UNAVAILABLE: {
-            "description": "Embedding provider is not configured"
-        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: documented_error(
+            "Invalid search query or result limit",
+            "validation_error",
+            "Request validation failed",
+        ),
+        status.HTTP_502_BAD_GATEWAY: documented_error(
+            "Embedding provider request failed",
+            "embedding_provider_error",
+            "Embedding generation failed",
+        ),
+        status.HTTP_503_SERVICE_UNAVAILABLE: documented_error(
+            "Embedding provider is not configured",
+            "embedding_provider_not_configured",
+            "Embedding provider is not configured",
+        ),
     },
     tags=["search"],
 )
@@ -178,9 +258,10 @@ async def search(
 ) -> SearchResponse:
     query = q.strip()
     if not query:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Search query must not be blank",
+            code="validation_error",
+            message="Search query must not be blank",
         )
 
     query_embedding = (

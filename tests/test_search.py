@@ -202,6 +202,7 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(context.exception.status_code, 422)
+        self.assertEqual(context.exception.code, "validation_error")
         self.assertEqual(session.execute_count, 0)
         self.assertIsNone(provider.texts)
 
@@ -218,6 +219,7 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(context.exception.status_code, 502)
+        self.assertEqual(context.exception.code, "embedding_provider_error")
         self.assertEqual(session.execute_count, 0)
 
 

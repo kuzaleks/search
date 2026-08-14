@@ -173,6 +173,27 @@ centered on matching lexical terms when possible, and limited to approximately
 320 characters. `limit` defaults to 10 and accepts values from 1 to 50 for each
 result collection.
 
+### Error Responses
+
+All errors use one JSON envelope with a stable machine-readable code and a
+human-readable message:
+
+```json
+{
+  "error": {
+    "code": "client_not_found",
+    "message": "Client not found"
+  }
+}
+```
+
+Validation failures also include field-level details. Unexpected failures are
+logged by the API but return only the generic `internal_server_error` response;
+internal exception details are not exposed to clients. The complete operation,
+parameter, model, and error-response documentation is available in Swagger UI
+at `http://localhost:8000/docs` or as JSON at
+`http://localhost:8000/openapi.json`.
+
 ## Running Tests
 
 The unit tests use fake embeddings and do not require an OpenAI API key:

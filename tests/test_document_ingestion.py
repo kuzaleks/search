@@ -86,6 +86,7 @@ class DocumentIngestionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(context.exception.status_code, 404)
+        self.assertEqual(context.exception.code, "client_not_found")
         self.assertIsNone(provider.texts)
         self.assertFalse(session.committed)
 
@@ -103,6 +104,7 @@ class DocumentIngestionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(context.exception.status_code, 502)
+        self.assertEqual(context.exception.code, "embedding_provider_error")
         self.assertIsNone(session.added)
         self.assertFalse(session.committed)
 
