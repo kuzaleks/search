@@ -27,6 +27,10 @@ Architecture decisions:
 - [ADR-003: Design for AWS Deployment](./ADR-003-design-for-aws-deployment.md)
 - [ADR-004: Use an Asynchronous Application Runtime](./ADR-004-use-an-asynchronous-application-runtime.md)
 
+Manual verification:
+
+- [Search Features and Manual Test Guide](./SEARCH_FEATURES.md)
+
 ## Prerequisites
 
 - Python 3.13 or newer.
