@@ -100,6 +100,33 @@ queries are indexable.
 - The external embedding provider remains part of end-to-end latency and
   availability.
 
+## Implementation Progress
+
+Document lexical retrieval now uses separate bounded title and chunk candidate
+queries. Title FTS, substring, and typo candidates are combined with
+`UNION ALL`; chunk FTS filters candidates before joining documents. The final
+merge deduplicates documents, retains the highest lexical score, and prefers a
+matching content snippet.
+
+A short database-only benchmark on the unchanged `baseline10k` dataset measured:
+
+| Case | Baseline p50 | Current p50 |
+|---|---:|---:|
+| Exact document title | 600.1 ms | 64.3 ms |
+| Typo document title | 595.5 ms | 64.3 ms |
+| Document content FTS | 392.9 ms | 65.1 ms |
+| Lexical no-match | 306.1 ms | 30.9 ms |
+
+All 42 unit and PostgreSQL integration tests pass, including title typo and
+stemming, content stemming, web-query syntax, deduplication, hybrid ranking,
+and snippet selection. `alembic check` reports no schema drift.
+
+The chunk query uses `ix_document_chunks_search_vector`. PostgreSQL still
+chooses a sequential scan for broad fuzzy-title scoring at this dataset size,
+and exact-title p50 remains above the 50 ms acceptance target. These results are
+intermediate; the complete sequential and concurrency-five API benchmarks have
+not yet been rerun.
+
 ## Acceptance Criteria
 
 Before changing this ADR to `Accepted`:

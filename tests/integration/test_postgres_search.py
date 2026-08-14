@@ -220,6 +220,28 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("calibrates spectrometers", match.snippet)
 
+    async def test_content_snippet_is_preferred_over_title_snippet(self) -> None:
+        client = await self.add_client()
+        document = await self.add_document(
+            client,
+            title="Photometric Custody Record",
+            content=(
+                "Administrative introduction. Photometric custody evidence "
+                "appears in this matching passage."
+            ),
+        )
+
+        matches = await search_lexical_documents(
+            self.session,
+            "photometric custody",
+            candidate_limit=100,
+        )
+
+        match = next(
+            item for item in matches if item.document.id == document.id
+        )
+        self.assertIn("Photometric custody evidence", match.snippet)
+
     async def test_web_phrase_and_exclusion(self) -> None:
         client = await self.add_client()
         included = await self.add_document(

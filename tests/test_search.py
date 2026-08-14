@@ -113,7 +113,10 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
             "This electricity statement confirms a residential address.",
         )
         session = FakeSession(
-            [[(document, 0.9, "electricity statement confirms an address")]]
+            [
+                [(document, 0.9)],
+                [(document, 0.5, 5, 58)],
+            ]
         )
 
         matches = await search_lexical_documents(
@@ -127,7 +130,37 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(matches[0].score, 0.9)
         self.assertEqual(
             matches[0].snippet,
-            "electricity statement confirms an address",
+            "electricity statement confirms a residential address.",
+        )
+
+    async def test_lexical_search_merges_title_and_chunk_candidates(self) -> None:
+        title_only = make_document("Electricity account", "Opening text")
+        content_match = make_document(
+            "Electricity bill",
+            "Prefix electricity confirms the address.",
+        )
+        session = FakeSession(
+            [
+                [(title_only, 0.9), (content_match, 0.8)],
+                [(content_match, 0.6, 7, 40)],
+            ]
+        )
+
+        matches = await search_lexical_documents(
+            session,
+            "electricity",
+            candidate_limit=100,
+        )
+
+        self.assertEqual(
+            [match.document for match in matches],
+            [title_only, content_match],
+        )
+        self.assertEqual(matches[0].snippet, "Opening text")
+        self.assertEqual(matches[1].score, 0.8)
+        self.assertEqual(
+            matches[1].snippet,
+            "electricity confirms the address.",
         )
 
     async def test_rrf_rewards_documents_found_by_both_rankings(self) -> None:
@@ -168,7 +201,8 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
             [
                 [(client, 0.85)],
                 [(document, 0.1, 0, len(document.content))],
-                [(document, 0.9, document.content)],
+                [(document, 0.9)],
+                [(document, 0.5, 0, len(document.content))],
             ]
         )
         provider = FakeEmbeddingProvider()

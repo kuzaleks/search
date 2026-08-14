@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import case, cast, func, literal, or_, select
+from sqlalchemy import case, cast, func, literal, or_, select, union_all
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -181,11 +181,56 @@ async def search_lexical_documents(
     query: str,
     candidate_limit: int,
 ) -> list[DocumentMatch]:
+    title_matches = await search_title_documents(
+        session,
+        query,
+        candidate_limit,
+    )
+    chunk_matches = await search_chunk_documents(
+        session,
+        query,
+        candidate_limit,
+    )
+
+    matches_by_id = {match.document.id: match for match in title_matches}
+    for chunk_match in chunk_matches:
+        title_match = matches_by_id.get(chunk_match.document.id)
+        if title_match is None:
+            matches_by_id[chunk_match.document.id] = chunk_match
+            continue
+
+        matches_by_id[chunk_match.document.id] = DocumentMatch(
+            document=chunk_match.document,
+            score=max(title_match.score, chunk_match.score),
+            snippet=chunk_match.snippet,
+        )
+
+    return sorted(
+        matches_by_id.values(),
+        key=lambda match: (-match.score, str(match.document.id)),
+    )[:candidate_limit]
+
+
+def _escape_like(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+async def search_title_documents(
+    session: AsyncSession,
+    query: str,
+    candidate_limit: int,
+) -> list[DocumentMatch]:
     text_config = cast("english", REGCONFIG)
     ts_query = func.websearch_to_tsquery(text_config, query)
     title_match = Document.title_search_vector.op("@@")(ts_query)
-    chunk_match = DocumentChunk.search_vector.op("@@")(ts_query)
-    title_substring = func.strpos(func.lower(Document.title), query.lower()) > 0
+    title_substring = Document.title.ilike(
+        f"%{_escape_like(query)}%",
+        escape="\\",
+    )
     title_word_match = literal(query).op("<%")(Document.title)
     title_word_similarity = func.word_similarity(
         query,
@@ -196,65 +241,112 @@ async def search_lexical_documents(
         ts_query,
         32,
     )
+    title_candidates = union_all(
+        select(
+            Document.id.label("document_id"),
+            title_rank.label("score"),
+        )
+        .where(title_match)
+        .order_by(title_rank.desc(), Document.id)
+        .limit(candidate_limit),
+        select(
+            Document.id.label("document_id"),
+            literal(0.9).label("score"),
+        )
+        .where(title_substring)
+        .order_by(Document.id)
+        .limit(candidate_limit),
+        select(
+            Document.id.label("document_id"),
+            title_word_similarity.label("score"),
+        )
+        .where(title_word_match)
+        .order_by(title_word_similarity.desc(), Document.id)
+        .limit(candidate_limit),
+    ).subquery()
+    best_titles = (
+        select(
+            title_candidates.c.document_id,
+            func.max(title_candidates.c.score).label("score"),
+        )
+        .group_by(title_candidates.c.document_id)
+        .order_by(
+            func.max(title_candidates.c.score).desc(),
+            title_candidates.c.document_id,
+        )
+        .limit(candidate_limit)
+        .subquery()
+    )
+    statement = (
+        select(Document, best_titles.c.score)
+        .join(best_titles, best_titles.c.document_id == Document.id)
+        .order_by(best_titles.c.score.desc(), Document.id)
+    )
+    rows = (await session.execute(statement)).all()
+
+    return [
+        DocumentMatch(
+            document=document,
+            score=float(match_score),
+            snippet=make_snippet(document.content, query),
+        )
+        for document, match_score in rows
+    ]
+
+
+async def search_chunk_documents(
+    session: AsyncSession,
+    query: str,
+    candidate_limit: int,
+) -> list[DocumentMatch]:
+    text_config = cast("english", REGCONFIG)
+    ts_query = func.websearch_to_tsquery(text_config, query)
+    chunk_match = DocumentChunk.search_vector.op("@@")(ts_query)
     chunk_rank = func.ts_rank_cd(
         DocumentChunk.search_vector,
         ts_query,
         32,
-    )
-    score = func.greatest(
-        title_rank,
-        chunk_rank,
-        case((title_substring, literal(0.9)), else_=literal(0.0)),
-        title_word_similarity,
     ).label("score")
-    chunk_text = func.substring(
-        Document.content,
-        DocumentChunk.start_offset + 1,
-        DocumentChunk.end_offset - DocumentChunk.start_offset,
-    ).label("chunk_text")
     best_chunks = (
         select(
-            Document.id.label("document_id"),
-            score,
-            chunk_text,
+            DocumentChunk.document_id,
+            DocumentChunk.start_offset,
+            DocumentChunk.end_offset,
+            chunk_rank,
         )
-        .join(DocumentChunk, DocumentChunk.document_id == Document.id)
-        .where(
-            or_(
-                title_match,
-                chunk_match,
-                title_substring,
-                title_word_match,
-            )
+        .where(chunk_match)
+        .distinct(DocumentChunk.document_id)
+        .order_by(
+            DocumentChunk.document_id,
+            chunk_rank.desc(),
+            DocumentChunk.chunk_index,
         )
-        .distinct(Document.id)
-        .order_by(Document.id, score.desc(), DocumentChunk.chunk_index)
         .subquery()
     )
     statement = (
-        select(Document, best_chunks.c.score, best_chunks.c.chunk_text)
+        select(
+            Document,
+            best_chunks.c.score,
+            best_chunks.c.start_offset,
+            best_chunks.c.end_offset,
+        )
         .join(best_chunks, best_chunks.c.document_id == Document.id)
         .order_by(best_chunks.c.score.desc(), Document.id)
         .limit(candidate_limit)
     )
     rows = (await session.execute(statement)).all()
 
-    matches = []
-    seen_document_ids = set()
-    for document, match_score, matched_text in rows:
-        if document.id in seen_document_ids:
-            continue
-
-        seen_document_ids.add(document.id)
-        matches.append(
-            DocumentMatch(
-                document=document,
-                score=float(match_score),
-                snippet=make_snippet(matched_text, query),
-            )
+    return [
+        DocumentMatch(
+            document=document,
+            score=float(match_score),
+            snippet=make_snippet(
+                document.content[start_offset:end_offset],
+                query,
+            ),
         )
-
-    return matches
+        for document, match_score, start_offset, end_offset in rows
+    ]
 
 
 def fuse_document_matches(
