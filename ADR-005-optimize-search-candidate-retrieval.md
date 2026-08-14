@@ -117,9 +117,31 @@ A short database-only benchmark on the unchanged `baseline10k` dataset measured:
 | Document content FTS | 392.9 ms | 65.1 ms |
 | Lexical no-match | 306.1 ms | 30.9 ms |
 
-All 42 unit and PostgreSQL integration tests pass, including title typo and
-stemming, content stemming, web-query syntax, deduplication, hybrid ranking,
-and snippet selection. `alembic check` reports no schema drift.
+Client retrieval now short-circuits a case-insensitive exact email match using
+`uq_clients_email_lower`. Other searches generate bounded full-name, email, and
+description substring and fuzzy candidates, deduplicate them, and then apply
+the existing exact, substring, and trigram scoring expression. Migration
+`20260814_0007` adds matching GIN trigram expression indexes for those fields.
+The application sets the similarity and word-similarity thresholds to `0.20`
+for the current transaction so indexed candidate filtering preserves the
+existing score cutoff.
+
+A 20-iteration database-only benchmark measured:
+
+| Case | Baseline p50 | Current p50 |
+|---|---:|---:|
+| Exact client email | 62.2 ms | 0.5 ms |
+| Typo client name | 43.1 ms | 43.7 ms |
+
+`EXPLAIN (ANALYZE, BUFFERS)` confirms that exact email retrieval uses the
+B-tree expression index. The broad typo fixture matches many near-identical
+generated client names, so PostgreSQL still considers a sequential scan cheaper
+for that candidate branch at 1,000 clients; its latency and expected result are
+preserved rather than materially improved.
+
+All 44 unit and PostgreSQL integration tests pass, including exact email,
+exact and typo name, description substring and typo, title and content search,
+hybrid ranking, and snippet selection. `alembic check` reports no schema drift.
 
 The chunk query uses `ix_document_chunks_search_vector`. PostgreSQL still
 chooses a sequential scan for broad fuzzy-title scoring at this dataset size,

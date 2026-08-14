@@ -9,6 +9,7 @@ from app.config import EMBEDDING_DIMENSIONS
 from app.embeddings import EmbeddingProviderError
 from app.models import Client, Document
 from app.search import (
+    ClientMatch,
     DocumentMatch,
     fuse_document_matches,
     make_snippet,
@@ -73,13 +74,26 @@ def make_document(title: str, content: str) -> Document:
 class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_maps_ranked_client_results(self) -> None:
         client = make_client()
-        session = FakeSession([[(client, 0.85)]])
+        session = FakeSession([[], [], [(client, 0.85)]])
 
         matches = await search_clients(session, "NevisWealth", limit=10)
 
         self.assertEqual(len(matches), 1)
         self.assertIs(matches[0].client, client)
         self.assertEqual(matches[0].score, 0.85)
+
+    async def test_exact_email_short_circuits_fuzzy_search(self) -> None:
+        client = make_client()
+        session = FakeSession([[(client,)]])
+
+        matches = await search_clients(
+            session,
+            "JOHN.DOE@NEVISWEALTH.COM",
+            limit=10,
+        )
+
+        self.assertEqual(matches, [ClientMatch(client=client, score=1.0)])
+        self.assertEqual(session.execute_count, 1)
 
     async def test_document_search_deduplicates_and_reconstructs_snippet(
         self,
@@ -199,6 +213,8 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         document = make_document("Utility bill", "address confirmation")
         session = FakeSession(
             [
+                [],
+                [],
                 [(client, 0.85)],
                 [(document, 0.1, 0, len(document.content))],
                 [(document, 0.9)],

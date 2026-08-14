@@ -21,6 +21,7 @@ from app.embeddings import get_embedding_provider
 from app.main import app
 from app.models import Client, Document, DocumentChunk
 from app.search import (
+    ClientMatch,
     hybrid_search_documents,
     search_clients,
     search_lexical_documents,
@@ -83,12 +84,13 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
         self,
         first_name: str = "Aurelius",
         last_name: str = "Quenford",
+        description: str | None = "Integration search fixture",
     ) -> Client:
         client = Client(
             first_name=first_name,
             last_name=last_name,
             email=f"integration-{uuid4().hex}@tests.nevis.dev",
-            description="Integration search fixture",
+            description=description,
             social_links=[],
         )
         self.session.add(client)
@@ -152,6 +154,9 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({"pg_trgm", "vector"}.issubset(extensions))
         self.assertTrue(
             {
+                "ix_clients_full_name_trgm",
+                "ix_clients_email_trgm",
+                "ix_clients_description_trgm",
                 "ix_documents_title_search_vector",
                 "ix_documents_title_trgm",
                 "ix_document_chunks_search_vector",
@@ -162,6 +167,11 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
     async def test_client_exact_and_typo_search(self) -> None:
         client = await self.add_client()
 
+        exact_email = await search_clients(
+            self.session,
+            client.email.upper(),
+            limit=10,
+        )
         exact = await search_clients(
             self.session,
             "Aurelius Quenford",
@@ -173,7 +183,31 @@ class PostgreSQLSearchTests(unittest.IsolatedAsyncioTestCase):
             limit=10,
         )
 
+        self.assertEqual(exact_email, [ClientMatch(client=client, score=1.0)])
         self.assertEqual(exact[0].client.id, client.id)
+        self.assertEqual(exact[0].score, 1.0)
+        self.assertIn(client.id, {match.client.id for match in typo})
+
+    async def test_client_description_substring_and_typo_search(self) -> None:
+        client = await self.add_client(
+            description="Intergenerational philanthropy mandate",
+        )
+
+        substring = await search_clients(
+            self.session,
+            "philanthropy",
+            limit=10,
+        )
+        typo = await search_clients(
+            self.session,
+            "intergeneratonal philantropy",
+            limit=10,
+        )
+
+        substring_match = next(
+            match for match in substring if match.client.id == client.id
+        )
+        self.assertGreaterEqual(substring_match.score, 0.85)
         self.assertIn(client.id, {match.client.id for match in typo})
 
     async def test_title_fts_stemming_and_typo_search(self) -> None:

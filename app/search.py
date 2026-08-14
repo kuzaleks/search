@@ -1,7 +1,16 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import case, cast, func, literal, or_, select, union_all
+from sqlalchemy import (
+    case,
+    cast,
+    func,
+    literal,
+    literal_column,
+    or_,
+    select,
+    union_all,
+)
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +18,8 @@ from app.models import Client, Document, DocumentChunk
 
 
 CLIENT_MATCH_THRESHOLD = 0.20
+CLIENT_CANDIDATE_MULTIPLIER = 10
+MINIMUM_CLIENT_CANDIDATES = 100
 DOCUMENT_SEMANTIC_THRESHOLD = 0.25
 DOCUMENT_CANDIDATE_MULTIPLIER = 10
 MINIMUM_DOCUMENT_CANDIDATES = 100
@@ -73,7 +84,44 @@ async def search_clients(
     limit: int,
 ) -> list[ClientMatch]:
     query_text = query.lower()
+    email = func.lower(Client.email)
+    exact_email_rows = (
+        await session.execute(
+            select(Client)
+            .where(email == query_text)
+            .limit(1)
+        )
+    ).all()
+    if exact_email_rows:
+        return [ClientMatch(client=exact_email_rows[0][0], score=1.0)]
+
+    await session.execute(
+        select(
+            func.set_config(
+                "pg_trgm.similarity_threshold",
+                str(CLIENT_MATCH_THRESHOLD),
+                True,
+            ),
+            func.set_config(
+                "pg_trgm.word_similarity_threshold",
+                str(CLIENT_MATCH_THRESHOLD),
+                True,
+            ),
+        )
+    )
+    candidate_limit = max(
+        MINIMUM_CLIENT_CANDIDATES,
+        limit * CLIENT_CANDIDATE_MULTIPLIER,
+    )
     full_name = func.concat_ws(" ", Client.first_name, Client.last_name)
+    normalized_full_name = func.lower(
+        Client.first_name
+        + literal_column("' '")
+        + Client.last_name
+    )
+    description = func.lower(
+        func.coalesce(Client.description, literal_column("''"))
+    )
     searchable_text = func.lower(
         func.concat_ws(
             " ",
@@ -87,14 +135,14 @@ async def search_clients(
         func.lower(Client.first_name) == query_text,
         func.lower(Client.last_name) == query_text,
         func.lower(full_name) == query_text,
-        func.lower(Client.email) == query_text,
+        email == query_text,
     )
     substring_match = func.strpos(searchable_text, query_text) > 0
     trigram_score = func.greatest(
         func.similarity(func.lower(Client.first_name), query_text),
         func.similarity(func.lower(Client.last_name), query_text),
         func.similarity(func.lower(full_name), query_text),
-        func.similarity(func.lower(Client.email), query_text),
+        func.similarity(email, query_text),
         func.word_similarity(query_text, searchable_text),
     )
     score = func.greatest(
@@ -103,15 +151,84 @@ async def search_clients(
         trigram_score,
     ).label("score")
 
+    substring_pattern = f"%{_escape_like(query_text)}%"
+    full_name_candidate_score = func.greatest(
+        func.similarity(normalized_full_name, query_text),
+        func.word_similarity(query_text, normalized_full_name),
+    )
+    email_candidate_score = func.greatest(
+        func.similarity(email, query_text),
+        func.word_similarity(query_text, email),
+    )
+
+    def candidates(
+        condition,
+        candidate_score,
+    ):
+        return (
+            select(
+                Client.id.label("client_id"),
+                candidate_score.label("candidate_score"),
+            )
+            .where(condition)
+            .order_by(candidate_score.desc(), Client.id)
+            .limit(candidate_limit)
+        )
+
+    candidate_rows = union_all(
+        candidates(
+            normalized_full_name.ilike(substring_pattern, escape="\\"),
+            literal(0.85),
+        ),
+        candidates(
+            email.ilike(substring_pattern, escape="\\"),
+            literal(0.85),
+        ),
+        candidates(
+            description.ilike(substring_pattern, escape="\\"),
+            literal(0.85),
+        ),
+        candidates(
+            or_(
+                normalized_full_name.op("%")(query_text),
+                normalized_full_name.op("%>")(query_text),
+            ),
+            full_name_candidate_score,
+        ),
+        candidates(
+            or_(
+                email.op("%")(query_text),
+                email.op("%>")(query_text),
+            ),
+            email_candidate_score,
+        ),
+        candidates(
+            description.op("%>")(query_text),
+            func.word_similarity(query_text, description),
+        ),
+    ).subquery()
+    best_candidates = (
+        select(
+            candidate_rows.c.client_id,
+            func.max(candidate_rows.c.candidate_score).label(
+                "candidate_score"
+            ),
+        )
+        .group_by(candidate_rows.c.client_id)
+        .order_by(
+            func.max(candidate_rows.c.candidate_score).desc(),
+            candidate_rows.c.client_id,
+        )
+        .limit(candidate_limit)
+        .subquery()
+    )
     statement = (
         select(Client, score)
-        .where(
-            or_(
-                exact_match,
-                substring_match,
-                trigram_score >= CLIENT_MATCH_THRESHOLD,
-            )
+        .join(
+            best_candidates,
+            best_candidates.c.client_id == Client.id,
         )
+        .where(score >= CLIENT_MATCH_THRESHOLD)
         .order_by(score.desc(), Client.id)
         .limit(limit)
     )

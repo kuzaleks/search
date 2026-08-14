@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    literal_column,
     String,
     Text,
     UniqueConstraint,
@@ -43,6 +44,28 @@ class Client(Base):
 
     __table_args__ = (
         Index("uq_clients_email_lower", func.lower(email), unique=True),
+        Index(
+            "ix_clients_full_name_trgm",
+            literal_column(
+                "lower((first_name::text || ' '::text) || last_name::text)"
+            ).label("full_name"),
+            postgresql_using="gin",
+            postgresql_ops={"full_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_clients_email_trgm",
+            func.lower(email).label("email_lower"),
+            postgresql_using="gin",
+            postgresql_ops={"email_lower": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_clients_description_trgm",
+            func.lower(
+                func.coalesce(description, literal_column("''"))
+            ).label("description_lower"),
+            postgresql_using="gin",
+            postgresql_ops={"description_lower": "gin_trgm_ops"},
+        ),
     )
 
 
