@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -235,10 +236,10 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
                 [],
                 [],
                 [(client, 0.85)],
-                [(document, 0.1, 0, len(document.content))],
                 [],
                 [(document, 0.9)],
                 [(document, 0.5, 0, len(document.content))],
+                [(document, 0.1, 0, len(document.content))],
             ]
         )
         provider = FakeEmbeddingProvider()
@@ -263,6 +264,95 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("semantic_ms=", logs.output[0])
         self.assertIn("lexical_ms=", logs.output[0])
         self.assertIn("response_build_ms=", logs.output[0])
+
+    async def test_search_overlaps_embedding_and_database_retrieval(self) -> None:
+        client = make_client()
+        document = make_document("Utility bill", "address confirmation")
+        release_embedding = asyncio.Event()
+        trace: list[str] = []
+
+        class CoordinatedProvider(FakeEmbeddingProvider):
+            async def embed(self, texts: list[str]) -> list[list[float]]:
+                self.texts = texts
+                trace.append("embedding_started")
+                await release_embedding.wait()
+                trace.append("embedding_finished")
+                return [[0.1] * EMBEDDING_DIMENSIONS for _ in texts]
+
+        class CoordinatedSession(FakeSession):
+            async def execute(self, statement) -> FakeResult:
+                trace.append(f"database_{self.execute_count + 1}")
+                result = await super().execute(statement)
+                if self.execute_count == 6:
+                    release_embedding.set()
+                return result
+
+        session = CoordinatedSession(
+            [
+                [],
+                [],
+                [(client, 0.85)],
+                [],
+                [(document, 0.9)],
+                [(document, 0.5, 0, len(document.content))],
+                [(document, 0.1, 0, len(document.content))],
+            ]
+        )
+
+        async with asyncio.timeout(1):
+            response = await search(
+                q="address proof",
+                session=session,
+                embedding_provider=CoordinatedProvider(),
+                limit=10,
+            )
+
+        self.assertEqual(len(response.clients), 1)
+        self.assertEqual(len(response.documents), 1)
+        self.assertLess(
+            trace.index("embedding_started"),
+            trace.index("database_1"),
+        )
+        self.assertLess(
+            trace.index("database_1"),
+            trace.index("embedding_finished"),
+        )
+        self.assertLess(
+            trace.index("embedding_finished"),
+            trace.index("database_7"),
+        )
+
+    async def test_search_cancels_embedding_when_database_retrieval_fails(
+        self,
+    ) -> None:
+        embedding_started = asyncio.Event()
+
+        class BlockingProvider(FakeEmbeddingProvider):
+            cancelled = False
+
+            async def embed(self, texts: list[str]) -> list[list[float]]:
+                embedding_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        class FailingSession(FakeSession):
+            async def execute(self, statement) -> FakeResult:
+                await embedding_started.wait()
+                raise RuntimeError("database failed")
+
+        provider = BlockingProvider()
+        with self.assertRaisesRegex(RuntimeError, "database failed"):
+            await search(
+                q="address proof",
+                session=FailingSession([]),
+                embedding_provider=provider,
+                limit=10,
+            )
+
+        self.assertTrue(provider.cancelled)
 
     async def test_blank_query_is_rejected_before_search(self) -> None:
         session = FakeSession([])

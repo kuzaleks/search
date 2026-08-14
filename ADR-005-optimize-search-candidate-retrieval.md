@@ -66,6 +66,21 @@ Add phase-level timings for query embedding, client retrieval, semantic
 retrieval, lexical retrieval, fusion, and serialization. This will distinguish
 database regressions from external embedding-provider stalls.
 
+Overlap independent work in two lanes:
+
+1. Start query-embedding generation as an `asyncio` task.
+2. On the request's existing `AsyncSession`, run client retrieval and lexical
+   document retrieval sequentially.
+3. Await the embedding if it is not ready, then run semantic retrieval and
+   reciprocal-rank fusion.
+
+Client and lexical queries deliberately share one sequential database lane.
+Running queries concurrently on one `AsyncSession` is unsupported, while
+opening phase-specific sessions would increase pool and database pressure. The
+expected endpoint duration becomes approximately
+`max(embedding, client + lexical) + semantic + fusion`, rather than the sum of
+every phase.
+
 ## Alternatives Considered
 
 ### Add more indexes without changing the query
@@ -87,6 +102,13 @@ second datastore and synchronization concerns. The measured semantic path is
 already fast, and PostgreSQL should handle the expected scale once candidate
 queries are indexable.
 
+### Run all database phases concurrently
+
+Rejected for now. It would require separate sessions and connections for
+client and lexical retrieval. Their combined work already fits beneath the
+embedding-provider latency in the measured workload, so the additional pool
+pressure would provide little critical-path benefit.
+
 ## Consequences
 
 - No-match and selective title searches should avoid work proportional to all
@@ -98,7 +120,14 @@ queries are indexable.
 - Client expression indexes increase write cost and storage but should remain
   small for the expected 1,000-10,000 clients.
 - The external embedding provider remains part of end-to-end latency and
-  availability.
+  availability, but independent database work no longer adds to it serially.
+- If database retrieval fails, the in-flight embedding task is cancelled and
+  awaited so it cannot outlive the request.
+- A delayed provider failure may be observed only after client and lexical
+  retrieval finish, causing bounded wasted database work. Immediate provider
+  configuration failures are detected before database retrieval starts.
+- Phase timings now overlap and therefore must not be added together to infer
+  total request duration.
 
 ## Implementation Progress
 
@@ -140,7 +169,7 @@ generated client names, so PostgreSQL still considers a sequential scan cheaper
 for that candidate branch at 1,000 clients; its latency and expected result are
 preserved rather than materially improved.
 
-All 47 unit and PostgreSQL integration tests pass, including exact email,
+All 49 unit and PostgreSQL integration tests pass, including exact email,
 exact and typo name, description substring and typo, title and content search,
 hybrid ranking, and snippet selection. `alembic check` reports no schema drift.
 
@@ -158,6 +187,26 @@ retrieval, semantic retrieval, lexical retrieval, fusion, response building,
 and total endpoint work. Embedding calls have an explicit retry count and an
 overall timeout that includes retries.
 
+### Pipeline Overlap Outcome
+
+Query embedding now runs concurrently with the sequential client and lexical
+database lane. Semantic retrieval still waits for the embedding, then the
+existing reciprocal-rank fusion combines semantic and lexical candidates. A
+focused test coordinates both lanes with events to prove the overlap, and a
+second test verifies that a database failure cancels the embedding task.
+
+Embedding latency remains the effective lower bound when it is slower than the
+independent database lane, but client and lexical latency are no longer added
+to it serially. The critical path is approximately
+`max(embedding, client + lexical) + semantic + fusion`.
+
+On the same `baseline10k` dataset, sequential API p50 fell from 184-240 ms to
+141-150 ms across the eight cases. At concurrency five, p50 fell from
+186-252 ms to 141-153 ms. Both runs returned 100% valid responses. One logged
+hybrid request demonstrates the overlap: 134.1 ms embedding, 37.8 ms client,
+72.9 ms lexical, 4.4 ms semantic, and 138.7 ms total. The phase durations sum
+past total because the first three database/provider durations overlap.
+
 ## Acceptance Evidence
 
 - `EXPLAIN (ANALYZE, BUFFERS)` shows GIN index retrieval for title and chunk
@@ -165,7 +214,7 @@ overall timeout that includes retries.
 - Exact title is 8.5 ms p50 and lexical no-match is 38.1 ms p50.
 - Client typo search retains its expected result and improves from 43.1 ms to
   37.3 ms p50 in the final database run.
-- All 47 relevance, snippet, stemming, web-query, typo, deduplication, API,
+- All 49 relevance, snippet, stemming, web-query, typo, deduplication, API,
   timeout, and integration tests pass.
 - Final sequential, concurrency-five, and database-only measurements are
   recorded in `PERFORMANCE_RESULTS.md`.

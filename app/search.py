@@ -86,6 +86,13 @@ def make_snippet(
     )
 
 
+def get_document_candidate_limit(limit: int) -> int:
+    return max(
+        MINIMUM_DOCUMENT_CANDIDATES,
+        limit * DOCUMENT_CANDIDATE_MULTIPLIER,
+    )
+
+
 async def search_clients(
     session: AsyncSession,
     query: str,
@@ -538,10 +545,7 @@ async def hybrid_search_documents(
     limit: int,
     timings: DocumentSearchTimings | None = None,
 ) -> list[DocumentMatch]:
-    candidate_limit = max(
-        MINIMUM_DOCUMENT_CANDIDATES,
-        limit * DOCUMENT_CANDIDATE_MULTIPLIER,
-    )
+    candidate_limit = get_document_candidate_limit(limit)
     started = perf_counter()
     semantic_matches = await search_semantic_documents(
         session,

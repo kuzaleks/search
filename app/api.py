@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from contextlib import suppress
 from time import perf_counter
 from typing import Annotated
 from uuid import UUID
@@ -30,8 +32,11 @@ from app.schemas import (
 )
 from app.search import (
     DocumentSearchTimings,
-    hybrid_search_documents,
+    fuse_document_matches,
+    get_document_candidate_limit,
     search_clients,
+    search_lexical_documents,
+    search_semantic_documents,
 )
 
 
@@ -271,24 +276,68 @@ async def search(
 
     request_started = perf_counter()
 
-    phase_started = perf_counter()
-    query_embedding = (
-        await generate_embeddings(embedding_provider, [query])
-    )[0]
-    embedding_ms = (perf_counter() - phase_started) * 1_000
+    async def generate_query_embedding() -> tuple[list[float], float]:
+        phase_started = perf_counter()
+        query_embedding = (
+            await generate_embeddings(embedding_provider, [query])
+        )[0]
+        return query_embedding, (perf_counter() - phase_started) * 1_000
 
-    phase_started = perf_counter()
-    client_matches = await search_clients(session, query, limit)
-    client_ms = (perf_counter() - phase_started) * 1_000
-
+    embedding_task = asyncio.create_task(generate_query_embedding())
+    query_embedding: list[float] | None = None
+    embedding_ms = 0.0
     document_timings = DocumentSearchTimings()
-    document_matches = await hybrid_search_documents(
+    candidate_limit = get_document_candidate_limit(limit)
+    try:
+        await asyncio.sleep(0)
+        if embedding_task.done():
+            query_embedding, embedding_ms = embedding_task.result()
+
+        phase_started = perf_counter()
+        client_matches = await search_clients(session, query, limit)
+        client_ms = (perf_counter() - phase_started) * 1_000
+
+        phase_started = perf_counter()
+        lexical_matches = await search_lexical_documents(
+            session,
+            query,
+            candidate_limit,
+        )
+        document_timings.lexical_ms = (
+            perf_counter() - phase_started
+        ) * 1_000
+
+        if query_embedding is None:
+            query_embedding, embedding_ms = await embedding_task
+    except BaseException:
+        if not embedding_task.done():
+            embedding_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await embedding_task
+        elif not embedding_task.cancelled():
+            embedding_task.exception()
+        raise
+
+    assert query_embedding is not None
+    phase_started = perf_counter()
+    semantic_matches = await search_semantic_documents(
         session,
-        query,
         query_embedding,
-        limit,
-        timings=document_timings,
+        candidate_limit,
     )
+    document_timings.semantic_ms = (
+        perf_counter() - phase_started
+    ) * 1_000
+
+    phase_started = perf_counter()
+    document_matches = fuse_document_matches(
+        semantic_matches,
+        lexical_matches,
+        limit,
+    )
+    document_timings.fusion_ms = (
+        perf_counter() - phase_started
+    ) * 1_000
 
     phase_started = perf_counter()
     response = SearchResponse(

@@ -184,6 +184,59 @@ Overall sequential reliability was 80/80, or 100%.
 Overall concurrency-five reliability was 160/160, or 100%. No provider timeout
 or application error was logged.
 
+## API After Pipeline Overlap
+
+Query embedding now overlaps the independent database lane. That lane runs
+client and lexical retrieval sequentially on one `AsyncSession`; semantic
+retrieval follows once the embedding is available. The dataset, result limit,
+warm-ups, and request counts are unchanged from the preceding API tables.
+
+### Sequential API
+
+| Case | Valid | Mean | p50 | p95/max |
+|---|---:|---:|---:|---:|
+| Exact client email | 10/10 | 203.0 ms | 148.3 ms | 719.5 ms |
+| Typo client | 10/10 | 142.1 ms | 140.9 ms | 154.2 ms |
+| Exact document title | 10/10 | 152.7 ms | 149.6 ms | 167.0 ms |
+| Typo document title | 10/10 | 144.8 ms | 141.9 ms | 159.6 ms |
+| Document content FTS | 10/10 | 144.0 ms | 144.4 ms | 157.1 ms |
+| Web query syntax | 10/10 | 155.1 ms | 147.3 ms | 188.4 ms |
+| Hybrid document | 10/10 | 155.5 ms | 148.1 ms | 255.1 ms |
+| No lexical match | 10/10 | 171.1 ms | 148.2 ms | 330.2 ms |
+
+Overall reliability was 80/80, or 100%. Compared with indexed candidate
+retrieval before overlap, p50 improved by 19-40% depending on the case. The
+719.5 ms exact-email outlier occurred in the external embedding phase.
+
+### Concurrent API
+
+Configuration: one warm-up, 20 measured requests per case, concurrency 5.
+
+| Case | Valid | Mean | p50 | p95 | Max | Throughput |
+|---|---:|---:|---:|---:|---:|---:|
+| Exact client email | 20/20 | 162.9 ms | 150.4 ms | 232.4 ms | 271.3 ms | 28.51 req/s |
+| Typo client | 20/20 | 156.4 ms | 149.8 ms | 191.3 ms | 225.2 ms | 29.58 req/s |
+| Exact document title | 20/20 | 153.2 ms | 149.3 ms | 171.6 ms | 188.1 ms | 31.21 req/s |
+| Typo document title | 20/20 | 157.3 ms | 151.6 ms | 192.2 ms | 200.0 ms | 29.82 req/s |
+| Document content FTS | 20/20 | 152.6 ms | 153.0 ms | 162.5 ms | 222.5 ms | 28.72 req/s |
+| Web query syntax | 20/20 | 142.4 ms | 141.0 ms | 156.1 ms | 161.6 ms | 34.24 req/s |
+| Hybrid document | 20/20 | 145.1 ms | 145.6 ms | 159.7 ms | 160.1 ms | 33.53 req/s |
+| No lexical match | 20/20 | 150.4 ms | 145.3 ms | 179.2 ms | 244.3 ms | 30.42 req/s |
+
+Overall reliability was 160/160, or 100%.
+
+The phase logs confirm that durations overlap. For example, one hybrid request
+reported 134.1 ms embedding, 37.8 ms client, 72.9 ms lexical, 4.4 ms semantic,
+and 138.7 ms total. Total latency is now approximately the slower of embedding
+or the client-plus-lexical lane, followed by semantic retrieval and fusion.
+
+### Database Check
+
+The orchestration change does not alter database query plans. A final
+30-iteration check remained 270/270 valid: semantic retrieval was 8.7 ms p50,
+exact email 0.5 ms, exact title 11.5 ms, content FTS 70.3 ms, and hybrid
+retrieval 96.7 ms.
+
 ### Query Plans and Attribution
 
 `EXPLAIN (ANALYZE, BUFFERS)` confirms:
