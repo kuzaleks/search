@@ -237,6 +237,46 @@ The orchestration change does not alter database query plans. A final
 exact email 0.5 ms, exact title 11.5 ms, content FTS 70.3 ms, and hybrid
 retrieval 96.7 ms.
 
+### Throughput Saturation Test
+
+Higher-concurrency runs tested whether the local deployment could sustain 50
+requests per second:
+
+- Concurrency 10: 50 measured requests per case.
+- Concurrency 15: 45 measured requests per case.
+- Concurrency 20: 40 measured requests per case.
+
+All 1,080 responses were valid. The best observed throughput for each
+homogeneous workload was:
+
+| Case | Best throughput | Concurrency |
+|---|---:|---:|
+| Exact client email | 54.2 req/s | 20 |
+| Typo client | 44.1 req/s | 15 |
+| Exact document title | 59.0 req/s | 15 |
+| Typo document title | 38.2 req/s | 20 |
+| Document content FTS | 46.5 req/s | 20 |
+| Web query syntax | 36.1 req/s | 15 |
+| Hybrid document | 38.5 req/s | 10 |
+| No lexical match | 61.2 req/s | 20 |
+
+Selective exact and no-match searches exceeded 50 requests per second. Broad
+typo, content, web-syntax, and hybrid searches plateaued between 36 and 47
+requests per second. Treating the eight homogeneous batches as equally
+weighted gives an approximate aggregate plateau of 44 requests per second;
+this is not a dedicated mixed-workload measurement.
+
+Increasing concurrency beyond the 15-connection SQLAlchemy pool capacity did
+not produce a general throughput improvement. At concurrency 20, p95 latency
+ranged from 438 ms to 947 ms. Phase logs showed client, lexical, and semantic
+database durations increasing under load, especially for broad queries.
+
+The current deployment therefore demonstrates more than 50 requests per
+second for selective searches, but not consistently across all search modes.
+Reaching a general 50-request-per-second target requires further optimization
+of broad PostgreSQL retrieval or additional database capacity; adding request
+concurrency alone is insufficient.
+
 ### Query Plans and Attribution
 
 `EXPLAIN (ANALYZE, BUFFERS)` confirms:
@@ -259,11 +299,13 @@ multiplying the request deadline and makes provider stalls attributable.
 
 ## Follow-up Opportunities
 
-1. Repeat the benchmark with 100,000 documents to observe the planner's index
+1. Optimize broad typo and lexical candidate retrieval, then repeat the
+   saturation test before claiming a general 50-request-per-second capacity.
+2. Repeat the benchmark with 100,000 documents to observe the planner's index
    choices at the upper expected data range.
-2. Evaluate a GiST trigram index if fuzzy-title latency becomes important; it
+3. Evaluate a GiST trigram index if fuzzy-title latency becomes important; it
    can support nearest-neighbor similarity ordering directly.
-3. Export phase timings to a metrics backend if production percentile alerts
+4. Export phase timings to a metrics backend if production percentile alerts
    are required.
 
 ## Reproducing
@@ -284,6 +326,17 @@ Concurrency-5 baseline:
   --iterations 20 \
   --warmup-iterations 1 \
   --concurrency 5
+```
+
+Throughput saturation runs:
+
+```bash
+.venv/bin/python -m scripts.benchmark_search \
+  --iterations 50 --warmup-iterations 2 --concurrency 10
+.venv/bin/python -m scripts.benchmark_search \
+  --iterations 45 --warmup-iterations 2 --concurrency 15
+.venv/bin/python -m scripts.benchmark_search \
+  --iterations 40 --warmup-iterations 2 --concurrency 20
 ```
 
 Database-only baseline:

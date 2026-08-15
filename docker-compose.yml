@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-search}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-search}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,6 +16,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   migration:
     build: .
@@ -31,13 +32,13 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-search}:${POSTGRES_PASSWORD:-search}@database:5432/${POSTGRES_DB:-search}
-      ENVIRONMENT: local
+      ENVIRONMENT: ${ENVIRONMENT:-local}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-30}
       EMBEDDING_MAX_RETRIES: ${EMBEDDING_MAX_RETRIES:-1}
     ports:
-      - "${APP_PORT:-8000}:8000"
+      - "${APP_BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-8000}:8000"
     depends_on:
       migration:
         condition: service_completed_successfully
@@ -53,6 +54,7 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+    restart: unless-stopped
 
 volumes:
   postgres_data:

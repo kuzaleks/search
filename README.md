@@ -5,6 +5,16 @@ semantic search.
 
 > Status: implementation in progress.
 
+## Live Demo
+
+The temporary interview deployment is available at:
+
+- API documentation: <http://18.133.142.221/docs>
+- Readiness check: <http://18.133.142.221/ready>
+
+This unauthenticated HTTP deployment is intentionally short-lived and may be
+removed after the interview review window.
+
 ## Overview
 
 The service will support:
@@ -32,6 +42,10 @@ Manual verification:
 
 - [Search Features and Manual Test Guide](./SEARCH_FEATURES.md)
 - [Search Performance Baseline](./PERFORMANCE_RESULTS.md)
+
+Deployment:
+
+- [Temporary EC2 Demo Deployment](./EC2_DEPLOYMENT.md)
 
 ## Prerequisites
 
