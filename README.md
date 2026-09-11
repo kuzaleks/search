@@ -1,6 +1,6 @@
-# Nevis Search API
+# Search API
 
-A Python API for searching Nevis clients and their documents using lexical and
+A Python API for searching clients and their documents using lexical and
 semantic search.
 
 > Status: implementation in progress.
